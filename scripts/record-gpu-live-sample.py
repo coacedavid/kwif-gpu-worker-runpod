@@ -23,9 +23,10 @@ import numpy as np
 WORKER = Path(__file__).resolve().parent.parent / "workers" / "gpu-stream-worker"
 sys.path.insert(0, str(WORKER))
 
-from cinema.dynamic_engine import ScenePlanner, StreamContext
-from cinema.music_pipeline import SAMPLE_RATE, build_live_soundtrack, loudnorm_audio
+from cinema.dynamic_engine import StreamContext
+from cinema.music_pipeline import SAMPLE_RATE, loudnorm_audio
 from cinema.song_composer import compose_diverse_soundtrack
+from cinema.stream_orchestrator import StreamOrchestrator
 from cinema_compositor import CinemaCompositor
 from token_state import TokenState
 
@@ -80,8 +81,15 @@ async def record() -> Path:
         symbol=SYMBOL, coin_name=COIN_NAME, mint=MINT,
         market_cap_usd=241_000, chat_sentiment="hype", duration_sec=DURATION_SEC,
     )
-    planner = ScenePlanner()
-    stream_plan = planner.plan(ctx)
+    simulated_chat = [
+        "trader99: can't see the mcap numbers??",
+        "degen1: wen moon ser",
+        "kwif_army: LOVE this celebration song!!",
+        "moon2: to the moon!",
+        "holder_x: chart looks insane",
+    ]
+    orchestrator = StreamOrchestrator()
+    stream_plan = await orchestrator.build_plan(ctx, simulated_chat)
     plan_path = Path("/tmp/runpod-stream-plan.json")
     plan_path.write_text(stream_plan.to_json())
     print(f"==> Dynamic stream plan seed={stream_plan.seed} -> {plan_path}")
@@ -198,7 +206,8 @@ def _telegram_video_path(video: Path) -> Path:
             "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart", str(out),
         ],
-        check=True, timeout=600,
+        check=True,
+        timeout=600,
     )
     print(f"Compressed to {out.stat().st_size / 1024 / 1024:.1f} MB")
     return out
