@@ -20,7 +20,8 @@ from cinema.audio_composer import (
     _render_celebration_bed,
     _render_lofi_bed,
 )
-from cinema.dynamic_engine import ScenePlanner, StreamContext
+from cinema.dynamic_engine import StreamContext
+from cinema.stream_orchestrator import StreamOrchestrator
 from cinema.scene_schema import StreamPlan, VocalSpec
 
 # Render style mapping: genre id prefix → synthesis function
@@ -82,12 +83,12 @@ async def compose_diverse_soundtrack(
         chat_sentiment="hype" if preferred_style == "hype" else "bullish",
         duration_sec=duration_sec,
     )
-    planner = ScenePlanner()
+    orchestrator = StreamOrchestrator()
     if plan is None:
-        plan = planner.plan(ctx)
+        plan = await orchestrator.build_plan(ctx)
 
-    music_sections = planner.music_sections(plan)
-    celebration_windows = planner.celebration_windows(plan)
+    music_sections = orchestrator.music_sections(plan)
+    celebration_windows = orchestrator.celebration_windows(plan)
     vocals = _vocals_from_plan(plan)
 
     print(f"  dynamic plan seed={plan.seed} genres={[l.genre for l in plan.audio_layers]}")
