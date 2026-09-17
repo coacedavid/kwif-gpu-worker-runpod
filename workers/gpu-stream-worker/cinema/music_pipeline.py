@@ -46,6 +46,7 @@ def _loop_pcm(pcm: np.ndarray, total_samples: int) -> np.ndarray:
 
 
 def _download_bg_music(dest: Path) -> bool:
+    """Fetch royalty-free Carefree (Kevin MacLeod / incompetech) on first run."""
     url = "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Carefree.mp3"
     try:
         import httpx
@@ -54,8 +55,10 @@ def _download_bg_music(dest: Path) -> bool:
             r = client.get(url)
             r.raise_for_status()
             dest.write_bytes(r.content)
+        print(f"  downloaded background bed -> {dest}")
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"  bg download failed: {exc}")
         return False
 
 
@@ -77,6 +80,7 @@ def _find_milestone_anthem() -> str | None:
 
 
 def generate_milestone_anthem(payload: dict) -> tuple[str, float]:
+    """Run production milestone-music-worker handler locally."""
     handler = MILESTONE_HANDLER
     if not handler.exists():
         handler = Path("/workspace/serverless/milestone-music-worker/handler.py")
@@ -86,6 +90,7 @@ def generate_milestone_anthem(payload: dict) -> tuple[str, float]:
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr or "milestone handler failed")
+    # Parse JSON from last { in output
     text = proc.stdout
     start = text.rfind("{")
     data = json.loads(text[start:])
@@ -93,6 +98,12 @@ def generate_milestone_anthem(payload: dict) -> tuple[str, float]:
     path = out.get("localPath") or out.get("audioUrl", "").replace("file://", "")
     duration = float(out.get("durationSec") or out.get("duration") or 28)
     return path, duration
+
+
+async def _tts_line(text: str, voice: str, out_mp3: Path) -> None:
+    import edge_tts
+    comm = edge_tts.Communicate(text, voice, rate="-3%", pitch="+1Hz")
+    await comm.save(str(out_mp3))
 
 
 async def build_live_soundtrack(
@@ -103,7 +114,12 @@ async def build_live_soundtrack(
     milestone_times: list[float] | None = None,
     preferred_style: str = "lofi",
 ) -> np.ndarray:
+    """
+    Diverse AI-composed soundtrack: rotating musical sections, celebration SONGS
+    at milestones (not the same loop), custom sung lyrics throughout.
+    """
     from cinema.song_composer import compose_diverse_soundtrack
+
     bg_path = _find_bg_music()
     anthem_path = _find_milestone_anthem()
     if not anthem_path:
@@ -112,21 +128,45 @@ async def build_live_soundtrack(
                 "tokenName": symbol, "tokenMint": mint or "demo-mint",
                 "coinName": coin_name, "milestoneType": "MCAP_241K", "marketCapUsd": 241_000,
             })
-        except Exception:
+        except Exception as exc:
+            print(f"  milestone anthem gen skipped: {exc}")
             anthem_path = None
+
+    print(f"  diverse song composer: bg={bg_path}, anthem={anthem_path}, style={preferred_style}")
     return await compose_diverse_soundtrack(
-        duration_sec, symbol=symbol, coin_name=coin_name, mint=mint,
-        milestone_anthem_path=anthem_path, royalty_bg_path=bg_path, preferred_style=preferred_style,
+        duration_sec,
+        symbol=symbol,
+        coin_name=coin_name,
+        mint=mint,
+        milestone_anthem_path=anthem_path,
+        royalty_bg_path=bg_path,
+        preferred_style=preferred_style,
     )
 
 
-def build_live_soundtrack_sync(**kwargs) -> np.ndarray:
-    return asyncio.run(build_live_soundtrack(**kwargs))
+def build_live_soundtrack_sync(
+    duration_sec: float,
+    symbol: str = "KWIF",
+    coin_name: str = "Kitten Wif Hat",
+    mint: str = "",
+    milestone_times: list[float] | None = None,
+    preferred_style: str = "lofi",
+) -> np.ndarray:
+    return asyncio.run(
+        build_live_soundtrack(duration_sec, symbol, coin_name, mint, milestone_times, preferred_style)
+    )
 
 
 def loudnorm_audio(in_path: Path, out_path: Path) -> None:
-    subprocess.run([
-        os.environ.get("FFMPEG_PATH", "ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(in_path), "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
-        "-ar", str(SAMPLE_RATE), "-ac", "2", str(out_path),
-    ], check=True, timeout=300)
+    """FFmpeg loudnorm to -14 LUFS — fixes 'silent' playback on mobile."""
+    subprocess.run(
+        [
+            os.environ.get("FFMPEG_PATH", "ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(in_path),
+            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+            "-ar", str(SAMPLE_RATE), "-ac", "2",
+            str(out_path),
+        ],
+        check=True,
+        timeout=300,
+    )
