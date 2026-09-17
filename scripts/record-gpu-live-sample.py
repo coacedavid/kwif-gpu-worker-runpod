@@ -179,6 +179,29 @@ async def record() -> Path:
     return OUT_PATH
 
 
+def _telegram_video_path(video: Path) -> Path:
+    """Telegram bot limit is 50MB — compress if needed (205s @ 720p can be ~70MB)."""
+    max_bytes = 48 * 1024 * 1024
+    if video.stat().st_size <= max_bytes:
+        return video
+    out = video.with_name(f"{video.stem}-telegram.mp4")
+    ffmpeg = os.environ.get("FFMPEG_PATH", "ffmpeg")
+    print(f"Compressing {video.stat().st_size / 1024 / 1024:.1f} MB for Telegram upload...")
+    subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "warning", "-y",
+            "-i", str(video),
+            "-c:v", "libx264", "-crf", "28", "-preset", "fast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart", str(out),
+        ],
+        check=True,
+        timeout=600,
+    )
+    print(f"Compressed to {out.stat().st_size / 1024 / 1024:.1f} MB")
+    return out
+
+
 def send_telegram(video: Path) -> None:
     token = (
         os.environ.get("TELEGRAM_OPS_BOT_TOKEN")
@@ -196,9 +219,10 @@ def send_telegram(video: Path) -> None:
     import urllib.request
     import urllib.parse
 
+    upload = _telegram_video_path(video)
     msg = (
-        "🎬 RunPod GPU Live Sample — REAL worker code path\n"
-        "CinemaCompositor + AudioEngine + milestone ducking on RunPod GPU"
+        "🎬 RunPod GPU Live Sample — 3.5 min full system path\n"
+        "CinemaCompositor + AudioEngine + live HUD + milestones on RunPod GPU"
     )
     urllib.request.urlopen(
         urllib.request.Request(
@@ -206,18 +230,20 @@ def send_telegram(video: Path) -> None:
             data=urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode(),
         )
     )
-    # curl is more reliable for large video upload
-    subprocess.run(
+    proc = subprocess.run(
         [
             "curl", "-fsS", "-X", "POST", f"https://api.telegram.org/bot{token}/sendVideo",
             "-F", f"chat_id={chat}",
-            "-F", f"video=@{video}",
+            "-F", f"video=@{upload}",
             "-F", "supports_streaming=true",
-            "-F", "caption=RunPod GPU — real CinemaCompositor + AudioEngine live sample",
+            "-F", "caption=RunPod GPU — 205s CinemaCompositor + AudioEngine + HUD + milestones",
         ],
-        check=True,
-        timeout=300,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Telegram upload failed: {proc.stderr or proc.stdout}")
     print("Sent to Telegram")
 
 
