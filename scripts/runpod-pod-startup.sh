@@ -1,10 +1,5 @@
 #!/bin/bash
 # RunPod GPU pod startup — installs deps, records sample, sends Telegram status.
-# Invoked as: curl -fsSL "$RUNPOD_STARTUP_SCRIPT_URL" | bash
-# Required env (set by orchestrator on the pod):
-#   RUNPOD_WORKER_BUNDLE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_CHAT_ID
-# Optional: RECORD_DURATION_SEC (default 30), WIDTH, HEIGHT, FPS
-
 set -euo pipefail
 
 log() { echo "[runpod-startup] $(date -u +%H:%M:%S) $*"; }
@@ -22,10 +17,7 @@ tg() {
 on_err() {
   local line="$1"
   log "FAILED at line ${line}"
-  tg "❌ RunPod sample FAILED (line ${line})
-Host: $(hostname)
-Tail log:
-$(tail -n 40 /tmp/record.log 2>/dev/null || echo 'no record.log')"
+  tg "❌ RunPod sample FAILED (line ${line})\nHost: $(hostname)\nTail log:\n$(tail -n 40 /tmp/record.log 2>/dev/null || echo 'no record.log')"
   echo FAILED > /tmp/runpod_job_status
   exit 1
 }
@@ -33,12 +25,9 @@ trap 'on_err $LINENO' ERR
 
 export DEBIAN_FRONTEND=noninteractive
 POD_ID="${RUNPOD_POD_ID:-unknown}"
-DURATION="${RECORD_DURATION_SEC:-30}"
+DURATION="${RECORD_DURATION_SEC:-205}"
 
-tg "🚀 RunPod GPU sample STARTED
-Pod: ${POD_ID}
-Duration: ${DURATION}s
-Bundle: ${RUNPOD_WORKER_BUNDLE_URL:-missing}"
+tg "🚀 RunPod GPU sample STARTED\nPod: ${POD_ID}\nDuration: ${DURATION}s (~3.5 min full sample)"
 
 log "Installing system packages..."
 apt-get update -qq
@@ -51,16 +40,7 @@ REPO_URL="${RUNPOD_WORKER_GIT_URL:-https://github.com/coacedavid/kwif-gpu-worker
 
 log "Fetching worker code..."
 rm -rf /app
-if [[ -n "${RUNPOD_WORKER_BUNDLE_URL:-}" ]]; then
-  mkdir -p /app
-  curl -fsSL "${RUNPOD_WORKER_BUNDLE_URL}" -o /tmp/bundle.tar.gz
-  tar xzf /tmp/bundle.tar.gz -C /app
-elif command -v git >/dev/null 2>&1; then
-  git clone --depth 1 "${REPO_URL}" /app
-else
-  apt-get install -y -qq git > /dev/null
-  git clone --depth 1 "${REPO_URL}" /app
-fi
+git clone --depth 1 "${REPO_URL}" /app
 
 log "Installing worker requirements..."
 cd /app/workers/gpu-stream-worker
@@ -90,10 +70,7 @@ if [[ ! -f /tmp/runpod-live-sample.mp4 ]]; then
 fi
 
 MB=$(du -m /tmp/runpod-live-sample.mp4 | cut -f1)
-tg "✅ RunPod GPU sample SUCCESS
-Pod: ${POD_ID}
-File: /tmp/runpod-live-sample.mp4 (${MB} MB)
-Video was uploaded above (or saved on pod if Telegram upload failed)."
+tg "✅ RunPod GPU sample SUCCESS\nPod: ${POD_ID}\nFile: ${MB} MB — full ~3.5 min sample sent above."
 
 echo SUCCESS > /tmp/runpod_job_status
 echo DONE > /tmp/runpod_job_complete
