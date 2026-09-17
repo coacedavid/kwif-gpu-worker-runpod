@@ -20,6 +20,19 @@ from cinema.scenes import SceneState
 
 STOCK_DIR = Path(__file__).resolve().parent.parent / "assets" / "cinema_stock" / "images"
 
+# Unsplash fallbacks when local stock images are missing (e.g. on RunPod pods).
+UNSPLASH_FALLBACKS: dict[str, str] = {
+    "neon_blue.jpg": "https://images.unsplash.com/photo-1519508150210-a2b2204e07c4?w=1280&h=720&fit=crop&q=80",
+    "trader.jpg": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1280&h=720&fit=crop&q=80",
+    "purple_city.jpg": "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=1280&h=720&fit=crop&q=80",
+    "party.jpg": "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1280&h=720&fit=crop&q=80",
+    "money_cash.jpg": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=1280&h=720&fit=crop&q=80",
+    "dancer.jpg": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1280&h=720&fit=crop&q=80",
+    "celebration.jpg": "https://images.unsplash.com/photo-1467810563316-b5477f231fc8?w=1280&h=720&fit=crop&q=80",
+    "crypto.jpg": "https://images.unsplash.com/photo-1621761191319-c6fb62004040?w=1280&h=720&fit=crop&q=80",
+    "dollars.jpg": "https://images.unsplash.com/photo-1565514020176-db58de9dd0b2?w=1280&h=720&fit=crop&q=80",
+}
+
 SCENE_IMAGES: dict[str, str] = {
     "lake_intro": "neon_blue.jpg",
     "pump_printer": "trader.jpg",
@@ -60,6 +73,28 @@ class KenBurnsState:
     pan_rate_y: float = 0.15
 
 
+def _download_stock_image(fname: str) -> Path | None:
+    """Fetch a stock image from Unsplash when the local asset is missing."""
+    url = UNSPLASH_FALLBACKS.get(fname)
+    if not url:
+        return None
+    dest = STOCK_DIR / fname
+    if dest.exists() and dest.stat().st_size > 10_000:
+        return dest
+    try:
+        import httpx
+        STOCK_DIR.mkdir(parents=True, exist_ok=True)
+        with httpx.Client(timeout=60, follow_redirects=True) as client:
+            r = client.get(url)
+            r.raise_for_status()
+            dest.write_bytes(r.content)
+        print(f"  downloaded stock image -> {dest}")
+        return dest
+    except Exception as exc:
+        print(f"  stock download failed ({fname}): {exc}")
+        return None
+
+
 class PhotorealSceneCache:
     """Lazy-load stock images per scene."""
 
@@ -70,6 +105,8 @@ class PhotorealSceneCache:
         if scene_id not in self._cache:
             fname = SCENE_IMAGES.get(scene_id, "neon_blue.jpg")
             path = STOCK_DIR / fname
+            if not path.exists():
+                path = _download_stock_image(fname) or path
             if not path.exists():
                 img = np.zeros((height, width, 3), dtype=np.uint8)
                 img[:] = (30, 60, 120)
