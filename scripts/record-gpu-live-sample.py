@@ -25,7 +25,7 @@ sys.path.insert(0, str(WORKER))
 
 from audio_engine import AudioEngine
 from cinema_compositor import CinemaCompositor
-from visual_compositor import TokenState
+from token_state import TokenState
 
 WIDTH = int(os.environ.get("WIDTH", "1280"))
 HEIGHT = int(os.environ.get("HEIGHT", "720"))

@@ -42,7 +42,7 @@ Bundle: ${RUNPOD_WORKER_BUNDLE_URL:-missing}"
 
 log "Installing system packages..."
 apt-get update -qq
-apt-get install -y -qq curl ffmpeg libgl1 libglib2.0-0 > /dev/null
+apt-get install -y -qq curl git ffmpeg libgl1 libglib2.0-0 > /dev/null
 
 log "Installing Python deps..."
 pip install -q numpy opencv-python-headless websockets httpx edge-tts pydantic pydantic-settings python-dotenv aiofiles
