@@ -133,7 +133,7 @@ async def build_live_soundtrack(
             anthem_path = None
 
     print(f"  diverse song composer: bg={bg_path}, anthem={anthem_path}, style={preferred_style}")
-    return await compose_diverse_soundtrack(
+    pcm, plan = await compose_diverse_soundtrack(
         duration_sec,
         symbol=symbol,
         coin_name=coin_name,
@@ -142,6 +142,7 @@ async def build_live_soundtrack(
         royalty_bg_path=bg_path,
         preferred_style=preferred_style,
     )
+    return pcm
 
 
 def build_live_soundtrack_sync(

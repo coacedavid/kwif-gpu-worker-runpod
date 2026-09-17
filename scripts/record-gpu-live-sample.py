@@ -23,7 +23,9 @@ import numpy as np
 WORKER = Path(__file__).resolve().parent.parent / "workers" / "gpu-stream-worker"
 sys.path.insert(0, str(WORKER))
 
+from cinema.dynamic_engine import ScenePlanner, StreamContext
 from cinema.music_pipeline import SAMPLE_RATE, build_live_soundtrack, loudnorm_audio
+from cinema.song_composer import compose_diverse_soundtrack
 from cinema_compositor import CinemaCompositor
 from token_state import TokenState
 
@@ -74,13 +76,26 @@ async def record() -> Path:
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("CINEMA_PROCEDURAL", "0")
 
-    print(f"==> Building diverse AI soundtrack ({DURATION_SEC:.0f}s) — rotating sections + sung lyrics")
-    master_pcm = await build_live_soundtrack(
+    ctx = StreamContext(
+        symbol=SYMBOL, coin_name=COIN_NAME, mint=MINT,
+        market_cap_usd=241_000, chat_sentiment="hype", duration_sec=DURATION_SEC,
+    )
+    planner = ScenePlanner()
+    stream_plan = planner.plan(ctx)
+    plan_path = Path("/tmp/runpod-stream-plan.json")
+    plan_path.write_text(stream_plan.to_json())
+    print(f"==> Dynamic stream plan seed={stream_plan.seed} -> {plan_path}")
+    print(f"    genres: {[l.genre for l in stream_plan.audio_layers]}")
+    print(f"    personas: {[v.persona_id for v in stream_plan.vocals]}")
+
+    print(f"==> Building diverse AI soundtrack ({DURATION_SEC:.0f}s) — modular plan + sung lyrics")
+    master_pcm, _ = await compose_diverse_soundtrack(
         DURATION_SEC,
         symbol=SYMBOL,
         coin_name=COIN_NAME,
         mint=MINT,
         preferred_style=MUSIC_STYLE,
+        plan=stream_plan,
     )
     audio_raw = Path(tempfile.mktemp(suffix=".wav"))
     audio_norm = Path(tempfile.mktemp(suffix="_norm.wav"))
@@ -183,8 +198,7 @@ def _telegram_video_path(video: Path) -> Path:
             "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart", str(out),
         ],
-        check=True,
-        timeout=600,
+        check=True, timeout=600,
     )
     print(f"Compressed to {out.stat().st_size / 1024 / 1024:.1f} MB")
     return out
