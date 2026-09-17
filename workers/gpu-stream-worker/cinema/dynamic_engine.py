@@ -24,6 +24,7 @@ from cinema.scene_schema import (
     VisualSceneSpec,
     VocalSpec,
 )
+from cinema.state_tracker import StateTracker
 
 # ── Asset pools ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ MUSIC_GENRES: list[dict[str, Any]] = [
     {"id": "meme_energy", "bpm": 115.0, "weight": 1.1, "render": "celebration"},
     {"id": "ambient_chill", "bpm": 72.0, "weight": 0.8, "render": "lofi"},
     {"id": "stadium_anthem", "bpm": 122.0, "weight": 1.5, "render": "celebration"},
+    {"id": "afrobeat_groove", "bpm": 105.0, "weight": 1.1, "render": "lofi"},
+    {"id": "jazz_fusion", "bpm": 95.0, "weight": 0.9, "render": "lofi"},
 ]
 
 VOICE_PERSONAS: list[dict[str, Any]] = [
@@ -75,8 +78,7 @@ MILESTONE_TIERS: list[dict[str, Any]] = [
     {"type": "MCAP_1M", "threshold": 1_000_000, "weight": 2.0, "genre_boost": "trap_finale"},
 ]
 
-_HISTORY_PATH = Path("/tmp/kwif_track_history.json")
-_NO_REPEAT_CYCLES = 4
+_NO_REPEAT_CYCLES = 10
 
 
 @dataclass
@@ -91,44 +93,8 @@ class StreamContext:
     duration_sec: float = 205.0
 
 
-class TrackHistory:
-    """Stateful no-repeat tracker — persists played asset IDs across runs."""
-
-    def __init__(self, no_repeat_cycles: int = _NO_REPEAT_CYCLES, path: Path = _HISTORY_PATH) -> None:
-        self._no_repeat = no_repeat_cycles
-        self._path = path
-        self._played: dict[str, deque[str]] = {
-            "genre": deque(maxlen=no_repeat_cycles * 3),
-            "persona": deque(maxlen=no_repeat_cycles * 2),
-            "visual": deque(maxlen=no_repeat_cycles * 2),
-        }
-        self._load()
-
-    def _load(self) -> None:
-        if self._path.exists():
-            try:
-                data = json.loads(self._path.read_text())
-                for key, ids in data.items():
-                    if key in self._played:
-                        self._played[key] = deque(ids, maxlen=self._played[key].maxlen)
-            except Exception:
-                pass
-
-    def _save(self) -> None:
-        try:
-            self._path.write_text(json.dumps({k: list(v) for k, v in self._played.items()}))
-        except Exception:
-            pass
-
-    def record(self, pool: str, asset_id: str) -> None:
-        if pool in self._played:
-            self._played[pool].append(asset_id)
-            self._save()
-
-    def filter_available(self, pool: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        recent = set(self._played.get(pool, []))
-        available = [c for c in candidates if c["id"] not in recent]
-        return available if available else candidates
+# TrackHistory alias for backward compatibility
+TrackHistory = StateTracker
 
 
 class WeightedSelector:
@@ -223,115 +189,21 @@ class DynamicPromptBuilder:
 
 
 class ScenePlanner:
-    """Assemble a full modular stream plan — no two runs identical."""
+    """Delegates to StreamOrchestrator for full multi-module planning."""
 
-    def __init__(self, history: TrackHistory | None = None) -> None:
-        self._history = history or TrackHistory()
+    def __init__(self, history: StateTracker | None = None) -> None:
+        from cinema.stream_orchestrator import StreamOrchestrator
+        self._orchestrator = StreamOrchestrator(history)
 
-    def plan(self, ctx: StreamContext) -> StreamPlan:
-        seed = hashlib.sha256(f"{ctx.mint}:{time.time():.0f}".encode()).hexdigest()[:12]
-        rng = random.Random(int(seed, 16))
-        tier = WeightedSelector.milestone_tier(ctx.market_cap_usd)
-        lyrics = TokenLyrics(ctx.symbol, ctx.coin_name, ctx.mint)
+    def plan(self, ctx: StreamContext, simulated_chat: list[str] | None = None) -> StreamPlan:
+        import asyncio
+        return asyncio.run(self._orchestrator.build_plan(ctx, simulated_chat))
 
-        plan = StreamPlan(
-            symbol=ctx.symbol,
-            coin_name=ctx.coin_name,
-            mint=ctx.mint,
-            duration_sec=ctx.duration_sec,
-            seed=seed,
-        )
-
-        # ── Audio layers: fill timeline with non-repeating genres ──
-        t = 0.0
-        section_idx = 0
-        genres_avail = self._history.filter_available("genre", MUSIC_GENRES)
-        while t < ctx.duration_sec - 8:
-            dur = rng.uniform(22.0, 38.0)
-            genre = WeightedSelector.pick(
-                genres_avail, rng, boost_id=tier.get("genre_boost"), boost_mult=1.8,
-            )
-            self._history.record("genre", genre["id"])
-            plan.audio_layers.append(AudioLayerSpec(
-                layer_id=f"layer_{section_idx}",
-                genre=genre["id"],
-                bpm=genre["bpm"] + rng.uniform(-4, 4),
-                start_sec=t,
-                duration_sec=min(dur, ctx.duration_sec - t),
-                asset_hash=hashlib.md5(f"{seed}:{genre['id']}:{section_idx}".encode()).hexdigest()[:8],
-                prompt=DynamicPromptBuilder.build_music_prompt(ctx, genre),
-            ))
-            t += dur
-            section_idx += 1
-            genres_avail = self._history.filter_available("genre", MUSIC_GENRES)
-
-        # ── Milestones at 40% and 67% of timeline ──
-        for frac, mcap_mult in [(0.40, 1.0), (0.67, 1.5)]:
-            at = ctx.duration_sec * frac
-            mcap = max(ctx.market_cap_usd, tier["threshold"] * mcap_mult)
-            m_tier = WeightedSelector.milestone_tier(mcap)
-            plan.milestones.append(MilestoneSpec(
-                at_sec=at,
-                milestone_type=m_tier["type"],
-                market_cap_usd=mcap,
-                celebration_genre=m_tier["genre_boost"],
-                anthem_prompt=DynamicPromptBuilder.build_anthem_prompt(ctx, m_tier),
-            ))
-
-        # ── Vocals: spaced with rotating personas ──
-        moments = ["intro", "verse", "whale", "milestone", "hype", "milestone", "verse", "outro"]
-        personas_avail = self._history.filter_available("persona", VOICE_PERSONAS)
-        vocal_times = [2.0, 14.0, 28.0, 48.0, 62.0]
-        vocal_times += [m.at_sec + 2 for m in plan.milestones]
-        vocal_times += [ctx.duration_sec * 0.85]
-        vocal_times = sorted(set(vocal_times))[:len(moments)]
-
-        for i, (at, moment) in enumerate(zip(vocal_times, moments)):
-            if at >= ctx.duration_sec:
-                break
-            persona = WeightedSelector.pick(personas_avail, rng)
-            self._history.record("persona", persona["id"])
-            personas_avail = self._history.filter_available("persona", VOICE_PERSONAS)
-            is_chorus = moment in ("milestone", "hype")
-            plan.vocals.append(VocalSpec(
-                at_sec=at,
-                persona_id=persona["id"],
-                voice=persona["voice"],
-                text=DynamicPromptBuilder.build_voiceover(ctx, persona, moment, lyrics, i),
-                rate=persona["rate"] if not is_chorus else "+10%",
-                pitch=persona["pitch"] if not is_chorus else "+5Hz",
-                is_chorus=is_chorus,
-            ))
-
-        # ── Visual scenes: non-repeating rotation ──
-        vis_avail = self._history.filter_available("visual", VISUAL_SCENES)
-        vt = 0.0
-        vis_idx = 0
-        while vt < ctx.duration_sec:
-            dur = rng.uniform(16.0, 28.0)
-            scene = WeightedSelector.pick(vis_avail, rng)
-            self._history.record("visual", scene["id"])
-            vis_avail = self._history.filter_available("visual", VISUAL_SCENES)
-            plan.visual_scenes.append(VisualSceneSpec(
-                scene_id=scene["id"],
-                start_sec=vt,
-                duration_sec=min(dur, ctx.duration_sec - vt),
-                stock_image=scene["image"],
-                visual_prompt=DynamicPromptBuilder.build_visual_prompt(ctx, scene),
-                negative_prompt=VISUAL_NEGATIVE,
-            ))
-            vt += dur
-            vis_idx += 1
-
-        return plan
+    async def plan_async(self, ctx: StreamContext, simulated_chat: list[str] | None = None) -> StreamPlan:
+        return await self._orchestrator.build_plan(ctx, simulated_chat)
 
     def celebration_windows(self, plan: StreamPlan) -> list[tuple[float, float]]:
-        return [(m.at_sec, 26.0 if i == 0 else 20.0) for i, m in enumerate(plan.milestones)]
+        return self._orchestrator.celebration_windows(plan)
 
     def music_sections(self, plan: StreamPlan) -> list[tuple[float, float, str, float]]:
-        """Convert plan audio layers to song_composer section tuples."""
-        genre_render = {g["id"]: g["render"] for g in MUSIC_GENRES}
-        return [
-            (layer.start_sec, layer.duration_sec, layer.genre, layer.bpm)
-            for layer in plan.audio_layers
-        ]
+        return self._orchestrator.music_sections(plan)
